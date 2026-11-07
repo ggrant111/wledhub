@@ -55,7 +55,7 @@ uint16_t touchMinX=200,touchMaxX=3800,touchMinY=200,touchMaxY=3800;
 int touchX=-1,touchY=-1, touchRawX=-1,touchRawY=-1;
 uint32_t touches=0;
 String lastError;
-uint8_t touchPage=0; // 0: devices, 1: DDP effects
+uint8_t touchPage=0; // 0: devices, 1: DDP effects, 2: color
 bool uiDirty=true;
 String screenSignature;
 unsigned long lastTouchAt=0;
@@ -432,7 +432,7 @@ void drawScreen() {
   screen.setTextColor(UI_ACCENT,UI_PANEL);screen.setTextSize(2);
   screen.setCursor(8,7);screen.print("WLEDHub ");
   screen.setTextSize(1);screen.print(VERSION);
-  screen.setCursor(274,10);screen.print(touchPage?"FX":"DEV");
+  screen.setCursor(274,10);screen.print(touchPage==0?"DEV":touchPage==1?"FX":"RGB");
   screen.fillRect(0,30,320,163,UI_BG);
   if(touchPage==0){
     screen.setTextSize(1); screen.setTextColor(TFT_WHITE,UI_BG);
@@ -452,9 +452,9 @@ void drawScreen() {
     uiButton(7,154,97,39,"PREV",UI_PANEL);
     uiButton(112,154,97,39,"NEXT",UI_PANEL);
     uiButton(217,154,96,39,streaming?"STOP":"PLAY",streaming?TFT_RED:0x04A7);
-  }else{
+  }else if(touchPage==1){
     screen.setTextColor(TFT_WHITE,UI_BG);screen.setTextSize(1);
-    screen.setCursor(9,34);screen.print("DDP EFFECT      Tap name to change");
+    screen.setCursor(9,34);screen.print("DDP EFFECT      Tap arrows to change");
     uiButton(8,48,94,36,"<",UI_PANEL);
     screen.setTextColor(TFT_WHITE,UI_BG);screen.setTextSize(2);
     screen.setCursor(121,58);screen.print(effectName());
@@ -462,10 +462,18 @@ void drawScreen() {
     sliderRow(90,"Speed",speed,0x065F);
     sliderRow(126,"Intensity",intensity,0xF9A0);
     sliderRow(162,"Brightness",brightness,0x05E8);
+  }else{
+    screen.setTextColor(TFT_WHITE,UI_BG); screen.setTextSize(1);
+    screen.setCursor(12,35);screen.print("COLOR MIXER   RGB (0-255)");
+    screen.fillRoundRect(230,33,76,24,4,screen.color565((rgb>>16)&255,(rgb>>8)&255,rgb&255));
+    sliderRow(61,"Red",(rgb>>16)&255,TFT_RED);
+    sliderRow(106,"Green",(rgb>>8)&255,TFT_GREEN);
+    sliderRow(151,"Blue",rgb&255,TFT_BLUE);
   }
   screen.fillRect(0,194,320,46,UI_BG);
-  uiButton(7,198,148,36,"DEVICES",touchPage==0?0x065F:UI_PANEL);
-  uiButton(164,198,148,36,"EFFECTS",touchPage==1?0x065F:UI_PANEL);
+  uiButton(5,198,100,36,"DEV",touchPage==0?0x065F:UI_PANEL);
+  uiButton(110,198,100,36,"FX",touchPage==1?0x065F:UI_PANEL);
+  uiButton(215,198,100,36,"RGB",touchPage==2?0x065F:UI_PANEL);
   screen.endWrite();
   screenSignature=signature;uiDirty=false;
 }
@@ -482,7 +490,7 @@ void handleTouch() {
     touches++;lastTouchAt=millis();
     Serial.printf("TOUCH raw=(%d,%d) mapped=(%d,%d) count=%lu\n",p.x,p.y,touchX,touchY,(unsigned long)touches);
     if(touchY>=194){
-      touchPage=touchX<160?0:1;uiDirty=true;
+      touchPage=touchX<107?0:touchX<214?1:2;uiDirty=true;
     }else if(touchPage==0 && touchY>=150 && touchY<194 && deviceCount){
       if(touchX<107){stopStream();selected=(selected+deviceCount-1)%deviceCount;}
       else if(touchX<214){stopStream();selected=(selected+1)%deviceCount;}
@@ -499,6 +507,12 @@ void handleTouch() {
         else brightness=value;
         uiDirty=true;
       }
+    }else if(touchPage==2 && touchY>=61 && touchY<194){
+      int value=constrain(map(touchX,13,307,0,255),0,255);
+      if(touchY<106)rgb=(rgb&0x00FFFF)|((uint32_t)value<<16);
+      else if(touchY<151)rgb=(rgb&0xFF00FF)|((uint32_t)value<<8);
+      else rgb=(rgb&0xFFFF00)|((uint32_t)value);
+      uiDirty=true;
     }
   }
   touchDown=down;
