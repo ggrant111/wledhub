@@ -9,10 +9,12 @@
 #include <ArduinoJson.h>
 #include <WiFiManager.h>
 #include <TFT_eSPI.h>
+#include <XPT2046_Touchscreen.h>
+#include <SPI.h>
 #include <math.h>
 #include "ddp_packet.h"
 
-static const char *VERSION="0.1.0";
+static const char *VERSION="0.1.1";
 static constexpr int MAX_DEVICES=16;
 static constexpr uint32_t POLL_MS=12000;
 static constexpr uint32_t DISCOVERY_MS=60000;
@@ -43,7 +45,15 @@ WiFiUDP ddpUdp;
 WebServer server(80);
 Preferences prefs;
 TFT_eSPI screen;
+// CYD XPT2046 touch is wired to its own SPI bus, NOT TFT SPI.
+SPIClass touchSPI(VSPI);
+XPT2046_Touchscreen touch(33, 36);
 bool touchDown=false;
+bool invertPanel=true; // v0.1.1 default: CYD units that display negative colors
+bool touchSwap=false, touchFlipX=false, touchFlipY=false;
+uint16_t touchMinX=200,touchMaxX=3800,touchMinY=200,touchMaxY=3800;
+int touchX=-1,touchY=-1, touchRawX=-1,touchRawY=-1;
+uint32_t touches=0;
 String lastError;
 
 String ipText(IPAddress ip) { return ip.toString(); }
@@ -211,6 +221,11 @@ String statusJSON() {
   doc["effect"]=effectMode; doc["speed"]=speed; doc["intensity"]=intensity;
   doc["brightness"]=brightness; doc["color"]=String(rgb,HEX);
   doc["error"]=lastError;
+  doc["displayInvert"]=invertPanel;
+  doc["touchCount"]=touches;
+  doc["touchX"]=touchX; doc["touchY"]=touchY;
+  doc["touchRawX"]=touchRawX; doc["touchRawY"]=touchRawY;
+  doc["touchSwap"]=touchSwap; doc["touchFlipX"]=touchFlipX; doc["touchFlipY"]=touchFlipY;
   JsonArray a=doc["devices"].to<JsonArray>();
   for(int i=0;i<deviceCount;i++) {
     JsonObject v=a.add<JsonObject>();
@@ -252,7 +267,15 @@ label{display:block;margin-top:12px}#msg{color:#ffc77a;min-height:18px}
 <div class="line" style="margin-top:20px"><button onclick="apply()">Apply Parameters</button><button class="primary" onclick="action('/api/start')">Start DDP</button><button class="danger" onclick="action('/api/stop')">Stop / Restore</button></div>
 <p id="msg"></p>
 </section><section><h2>Maintenance</h2><p id="status" class="muted"></p>
-<a style="color:#64dfcb" href="/update">OTA Firmware Update</a></section>
+<a style="color:#64dfcb" href="/update">OTA Firmware Update</a>
+<h3>Display & touch diagnostics</h3>
+<label><input type="checkbox" id="invert"> Invert display colors</label>
+<label><input type="checkbox" id="swap"> Swap touch axes</label>
+<label><input type="checkbox" id="flipx"> Flip touch X</label>
+<label><input type="checkbox" id="flipy"> Flip touch Y</label>
+<button onclick="displaySettings()">Save display and touch settings</button>
+<p class="muted" id="touchStatus">No touches yet</p>
+</section>
 <script>
 let state={},editing=false;
 async function action(url,body){try {let response=await fetch(url,{method:'POST',headers:{'Content-Type':'application/x-www-form-urlencoded'},body:new URLSearchParams(body||{})});let data=await response.json();document.getElementById('msg').textContent=data.error||(!response.ok?'Request failed':'');await refresh(true)}catch(e){document.getElementById('msg').textContent=e.message}}
@@ -260,6 +283,7 @@ function choose(index){action('/api/select',{index})}
 function add(){action('/api/add',{ip:document.getElementById('manual').value})}
 function toggle(){let d=state.devices?.[state.selected];if(d)action('/api/native',{on:d.on?'0':'1'})}
 function nativeBrightness(bri){action('/api/native',{bri})}
+function displaySettings(){action('/api/display',{invert:document.getElementById('invert').checked?'1':'0',swap:document.getElementById('swap').checked?'1':'0',flipx:document.getElementById('flipx').checked?'1':'0',flipy:document.getElementById('flipy').checked?'1':'0'})}
 function apply(){action('/api/params',{effect:document.getElementById('effect').value,color:document.getElementById('color').value.slice(1),speed:document.getElementById('speed').value,intensity:document.getElementById('intensity').value,brightness:document.getElementById('brightness').value})}
 async function refresh(force=false){
 try{
@@ -271,6 +295,11 @@ document.getElementById('info').textContent=d?(d.online?'Online':'Offline')+' ·
 document.getElementById('native').value=d?.bri??0;
 document.getElementById('nativeValue').textContent=d?.bri??0;
 document.getElementById('v').textContent=state.version;
+document.getElementById('invert').checked=state.displayInvert;
+document.getElementById('swap').checked=state.touchSwap;
+document.getElementById('flipx').checked=state.touchFlipX;
+document.getElementById('flipy').checked=state.touchFlipY;
+document.getElementById('touchStatus').textContent='Detected touches: '+state.touchCount+' · Last screen: ('+state.touchX+','+state.touchY+') · Raw: ('+state.touchRawX+','+state.touchRawY+')';
 document.getElementById('status').textContent=(state.streaming?'DDP streaming':'Idle')+' · '+state.ip+' · '+state.wifi;
 if(force||!editing){
 for(let k of ['effect','speed','intensity','brightness'])document.getElementById(k).value=state[k];
@@ -289,6 +318,7 @@ refresh();setInterval(()=>refresh(),5000);
 void reply(bool ok=true) {
   server.send(ok?200:400,"application/json",statusJSON());
 }
+void drawScreen();
 void routes() {
   server.on("/",HTTP_GET,[](){server.send_P(200,"text/html",INDEX_HTML);});
   server.on("/api/status",HTTP_GET,[](){server.send(200,"application/json",statusJSON());});
@@ -325,6 +355,19 @@ void routes() {
     if(color.length()!=6) {lastError="Color requires 6 hex characters";reply(false);return;}
     for(unsigned int i=0;i<color.length();i++)if(!isxdigit(color[i])){lastError="Invalid color";reply(false);return;}
     rgb=strtoul(color.c_str(),nullptr,16);lastError="";reply();
+  });
+  server.on("/api/display",HTTP_POST,[](){
+    invertPanel=server.arg("invert")=="1";
+    touchSwap=server.arg("swap")=="1";
+    touchFlipX=server.arg("flipx")=="1";
+    touchFlipY=server.arg("flipy")=="1";
+    prefs.putBool("invert",invertPanel);
+    prefs.putBool("swap",touchSwap);
+    prefs.putBool("flipx",touchFlipX);
+    prefs.putBool("flipy",touchFlipY);
+    screen.invertDisplay(invertPanel);
+    drawScreen();
+    reply();
   });
   server.on("/api/start",HTTP_POST,[](){reply(startStream());});
   server.on("/api/stop",HTTP_POST,[](){stopStream();lastError="";reply();});
@@ -376,24 +419,39 @@ void drawScreen() {
   screen.print("Web: ");screen.print(WiFi.localIP());
 }
 void handleTouch() {
-  uint16_t x,y;
-  bool down=screen.getTouch(&x,&y);
-  if(down&&!touchDown) {
-    if(y>=168 && deviceCount) {
-      if(x<80) {stopStream();selected=(selected+deviceCount-1)%deviceCount;}
-      else if(x<160) {stopStream();selected=(selected+1)%deviceCount;}
+  // Read the separate XPT2046 SPI bus (GPIO 25/32/39, CS33 IRQ36).
+  bool down=touch.touched();
+  if(down && !touchDown) {
+    TS_Point p=touch.getPoint();
+    touchRawX=p.x; touchRawY=p.y;
+    int a=touchSwap?p.y:p.x;
+    int b=touchSwap?p.x:p.y;
+    touchX=constrain(map(a,touchMinX,touchMaxX,0,screen.width()-1),0,screen.width()-1);
+    touchY=constrain(map(b,touchMinY,touchMaxY,0,screen.height()-1),0,screen.height()-1);
+    if(touchFlipX)touchX=screen.width()-1-touchX;
+    if(touchFlipY)touchY=screen.height()-1-touchY;
+    touches++;
+    Serial.printf("TOUCH raw=(%d,%d) mapped=(%d,%d) count=%lu\n",p.x,p.y,touchX,touchY,(unsigned long)touches);
+    // Yellow marker helps distinguish detection from mis-calibration.
+    screen.fillCircle(touchX,touchY,4,TFT_YELLOW);
+    if(touchY>=168 && touchY<=226 && deviceCount) {
+      if(touchX<80) {stopStream();selected=(selected+deviceCount-1)%deviceCount;}
+      else if(touchX<160) {stopStream();selected=(selected+1)%deviceCount;}
       else {if(streaming)stopStream();else startStream();}
       drawScreen();
     }
   }
   touchDown=down;
 }
+
 void setup() {
   Serial.begin(115200);
+  pinMode(21,OUTPUT); digitalWrite(21,HIGH);
   screen.init();screen.setRotation(1);
-  // Calibrate for your individual board using TFT_eSPI calibrateTouch if needed.
-  uint16_t touchCalibration[5]={275,3620,264,3532,1};
-  screen.setTouch(touchCalibration);
+  touchSPI.begin(25,39,32,33);
+  touch.begin(touchSPI);
+  touch.setRotation(1);
+  // Touch SPI is separate; TFT_eSPI::setTouch() would read the wrong bus.
   screen.fillScreen(TFT_BLACK);
   screen.setTextColor(TFT_CYAN,TFT_BLACK);screen.setTextSize(2);
   screen.setCursor(8,20);screen.println("WLEDHub booting");
@@ -402,6 +460,11 @@ void setup() {
   manager.setConfigPortalTimeout(180);
   if(!manager.autoConnect("WLEDHub-Setup")) ESP.restart();
   prefs.begin("wledhub",false);
+  invertPanel=prefs.getBool("invert",true);
+  touchSwap=prefs.getBool("swap",false);
+  touchFlipX=prefs.getBool("flipx",false);
+  touchFlipY=prefs.getBool("flipy",false);
+  screen.invertDisplay(invertPanel);
   loadIPs();
   MDNS.begin("wledhub");
   discover();
