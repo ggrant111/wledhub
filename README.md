@@ -1,4 +1,4 @@
-# WLEDHub v0.1.0 — CYD WLED Control Center
+# WLEDHub v0.1.1 — CYD WLED Control Center
 
 Standalone firmware for **ESP32-2432S028R (2.8 inch 320x240 resistive-touch CYD)**.
 
@@ -34,3 +34,12 @@ The CYD discovery is mDNS-based, so devices hidden by VLAN/multicast restriction
 - `include/ddp_packet.h` testable packet header writer
 - `test/test_ddp.py` protocol tests
 - `.github/workflows/build.yml` CI firmware artifact/release
+
+## CYD touch/display hardware fix (v0.1.1)
+The 2.8-inch ESP32-2432S028R uses a **separate XPT2046 touch SPI bus** (CLK 25, MOSI 32, MISO 39, CS 33, IRQ 36), not the LCD SPI bus. Previous firmware used TFT_eSPI touch on the wrong bus and could not detect taps. v0.1.1 uses XPT2046_Touchscreen with independent VSPI initialization.
+
+- CYD display uses ILI9341_2 and BGR color ordering; display inversion defaults ON to address panels showing negative colors.
+- If your screen looks wrong, use web dashboard **Maintenance → Display & touch diagnostics** to turn **Invert display colors** OFF, then Save. Setting persists through reboot.
+- Touch count + raw/mapped X/Y are visible in diagnostics and serial monitor (115200). Tap once anywhere to verify count increments. Bottom-left, middle, and right touchscreen buttons are Previous, Next, Play/Stop.
+- If taps increment the counter but don't hit their target, use **Swap touch axes / Flip touch X / Flip touch Y** toggles on the web dashboard to diagnose orientation mismatch. Future versions can add guided 4-corner calibration.
+- This change has not yet been verified on your physical CYD. Upload the newly built v0.1.1 firmware using the existing web OTA portal.
