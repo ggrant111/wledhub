@@ -15,6 +15,8 @@ jobs:
           python-version: '3.11'
       - name: Unit test DDP packet builder
         run: python -m unittest discover -s test -p 'test_*.py' -v
+      - name: Compile and run native DDP packet tests
+        run: g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/test_ddp.cpp -o /tmp/wledhub-ddp && /tmp/wledhub-ddp
       - name: Install PlatformIO
         run: pip install platformio
       - name: Compile firmware
