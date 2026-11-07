@@ -14,7 +14,7 @@
 #include <math.h>
 #include "ddp_packet.h"
 
-static const char *VERSION="0.1.1";
+static const char *VERSION="0.1.2";
 static constexpr int MAX_DEVICES=16;
 static constexpr uint32_t POLL_MS=12000;
 static constexpr uint32_t DISCOVERY_MS=60000;
@@ -55,6 +55,11 @@ uint16_t touchMinX=200,touchMaxX=3800,touchMinY=200,touchMaxY=3800;
 int touchX=-1,touchY=-1, touchRawX=-1,touchRawY=-1;
 uint32_t touches=0;
 String lastError;
+uint8_t touchPage=0; // 0: devices, 1: DDP effects
+bool uiDirty=true;
+String screenSignature;
+unsigned long lastTouchAt=0;
+const uint16_t UI_BG=0x0861, UI_PANEL=0x10E3, UI_ACCENT=TFT_CYAN;
 
 String ipText(IPAddress ip) { return ip.toString(); }
 int indexFor(IPAddress ip) {
@@ -391,54 +396,109 @@ void routes() {
   });
   server.begin();
 }
-void drawScreen() {
-  screen.fillScreen(TFT_BLACK);
-  screen.setTextColor(TFT_CYAN,TFT_BLACK); screen.setTextSize(2);
-  screen.setCursor(8,8);screen.print("WLEDHub ");screen.print(VERSION);
-  screen.setTextSize(1);
-  screen.setTextColor(TFT_WHITE,TFT_BLACK);
-  screen.setCursor(8,37);screen.print(WiFi.localIP());
-  screen.setCursor(8,56);screen.printf("Found: %d  Select: %d",deviceCount,selected+1);
-  if(selected>=0) {
-    WDevice &d=devices[selected];
-    screen.setTextSize(2);screen.setCursor(8,78);
-    screen.print(d.name.substring(0,19));
-    screen.setTextSize(1);screen.setCursor(8,105);
-    screen.printf("%s | %u LEDs | bri %d",d.online?"ONLINE":"OFFLINE",d.count,d.bri);
+const char *effectName() {return effectMode==0?"Solid":effectMode==1?"Pulse":"Chase";}
+void uiButton(int x,int y,int w,int h,const char *caption,uint16_t color) {
+  screen.fillRoundRect(x,y,w,h,6,color);
+  screen.setTextColor(TFT_WHITE,color);
+  screen.setTextSize(2);
+  screen.setCursor(x+8,y+(h-16)/2);
+  screen.print(caption);
+}
+void sliderRow(int y,const char *label,int value,uint16_t color) {
+  screen.fillRect(0,y,320,46,UI_BG);
+  screen.setTextSize(1); screen.setTextColor(TFT_WHITE,UI_BG);
+  screen.setCursor(12,y+2);screen.printf("%s: %d",label,value);
+  screen.fillRoundRect(13,y+18,294,10,4,UI_PANEL);
+  int filled=constrain(map(value,0,255,0,294),0,294);
+  if(filled>0)screen.fillRoundRect(13,y+18,filled,10,4,color);
+  screen.fillCircle(13+filled,y+23,7,TFT_WHITE);
+}
+String signatureForScreen(){
+  String sign=String(touchPage)+":"+String(selected)+":"+String(deviceCount)+":"+String(streaming)+":"+String(effectMode)+":"+String(speed)+":"+String(intensity)+":"+String(brightness)+":"+String(rgb);
+  if(selected>=0&&selected<deviceCount){
+    const WDevice &d=devices[selected];
+    sign+=":"+d.name+":"+String(d.online)+":"+String(d.count)+":"+String(d.bri);
   }
-  screen.setCursor(8,127);screen.printf("DDP: %s | %s",streaming?"PLAYING":"STOPPED",effectMode==0?"Solid":effectMode==1?"Pulse":"Chase");
-  screen.setCursor(8,145);screen.printf("Color #%06lX S:%d I:%d",(unsigned long)rgb,speed,intensity);
-  screen.fillRoundRect(5,176,72,44,5,TFT_DARKGREY);
-  screen.fillRoundRect(84,176,72,44,5,TFT_DARKGREY);
-  screen.fillRoundRect(163,176,72,44,5,streaming?TFT_RED:TFT_DARKGREEN);
-  screen.setTextSize(2);screen.setTextColor(TFT_WHITE);
-  screen.setCursor(24,190);screen.print("<");
-  screen.setCursor(113,190);screen.print(">");
-  screen.setCursor(170,190);screen.print(streaming?"STOP":"PLAY");
-  screen.setTextSize(1); screen.setCursor(8,228);
-  screen.print("Web: ");screen.print(WiFi.localIP());
+  sign+=":"+WiFi.localIP().toString();
+  return sign;
+}
+void drawScreen() {
+  String signature=signatureForScreen();
+  if(!uiDirty && signature==screenSignature)return;
+  // Only repaint on state changes, never on the previous 3-second timer.
+  // Full clearing is limited to deliberate changes; static screen remains untouched.
+  screen.startWrite();
+  screen.fillRect(0,0,320,30,UI_PANEL);
+  screen.setTextColor(UI_ACCENT,UI_PANEL);screen.setTextSize(2);
+  screen.setCursor(8,7);screen.print("WLEDHub ");
+  screen.setTextSize(1);screen.print(VERSION);
+  screen.setCursor(274,10);screen.print(touchPage?"FX":"DEV");
+  screen.fillRect(0,30,320,163,UI_BG);
+  if(touchPage==0){
+    screen.setTextSize(1); screen.setTextColor(TFT_WHITE,UI_BG);
+    screen.setCursor(9,36);screen.print(WiFi.localIP());
+    screen.setCursor(9,52);screen.printf("%d controllers  |  #%d",deviceCount,selected+1);
+    if(selected>=0 && selected<deviceCount){
+      const WDevice &d=devices[selected];
+      screen.setTextSize(2);screen.setTextColor(TFT_WHITE,UI_BG);
+      screen.setCursor(9,75);screen.print(d.name.substring(0,22));
+      screen.setTextSize(1);screen.setCursor(9,102);
+      screen.printf("%s   %u LEDs   Brightness %d",d.online?"ONLINE":"OFFLINE",d.count,d.bri);
+      screen.setCursor(9,119);screen.print(d.ip.toString());
+    }else{
+      screen.setCursor(9,82);screen.print("No devices. Discover via web dashboard.");
+    }
+    screen.setCursor(9,144);screen.printf("DDP %s  |  %s",streaming?"PLAYING":"STOPPED",effectName());
+    uiButton(7,154,97,39,"PREV",UI_PANEL);
+    uiButton(112,154,97,39,"NEXT",UI_PANEL);
+    uiButton(217,154,96,39,streaming?"STOP":"PLAY",streaming?TFT_RED:0x04A7);
+  }else{
+    screen.setTextColor(TFT_WHITE,UI_BG);screen.setTextSize(1);
+    screen.setCursor(9,34);screen.print("DDP EFFECT      Tap name to change");
+    uiButton(8,48,94,36,"<",UI_PANEL);
+    screen.setTextColor(TFT_WHITE,UI_BG);screen.setTextSize(2);
+    screen.setCursor(121,58);screen.print(effectName());
+    uiButton(219,48,94,36,">",UI_PANEL);
+    sliderRow(90,"Speed",speed,0x065F);
+    sliderRow(126,"Intensity",intensity,0xF9A0);
+    sliderRow(162,"Brightness",brightness,0x05E8);
+  }
+  screen.fillRect(0,194,320,46,UI_BG);
+  uiButton(7,198,148,36,"DEVICES",touchPage==0?0x065F:UI_PANEL);
+  uiButton(164,198,148,36,"EFFECTS",touchPage==1?0x065F:UI_PANEL);
+  screen.endWrite();
+  screenSignature=signature;uiDirty=false;
 }
 void handleTouch() {
-  // Read the separate XPT2046 SPI bus (GPIO 25/32/39, CS33 IRQ36).
   bool down=touch.touched();
-  if(down && !touchDown) {
+  if(down && !touchDown && millis()-lastTouchAt>130){
     TS_Point p=touch.getPoint();
-    touchRawX=p.x; touchRawY=p.y;
-    int a=touchSwap?p.y:p.x;
-    int b=touchSwap?p.x:p.y;
+    touchRawX=p.x;touchRawY=p.y;
+    int a=touchSwap?p.y:p.x,b=touchSwap?p.x:p.y;
     touchX=constrain(map(a,touchMinX,touchMaxX,0,screen.width()-1),0,screen.width()-1);
     touchY=constrain(map(b,touchMinY,touchMaxY,0,screen.height()-1),0,screen.height()-1);
     if(touchFlipX)touchX=screen.width()-1-touchX;
     if(touchFlipY)touchY=screen.height()-1-touchY;
-    touches++;
+    touches++;lastTouchAt=millis();
     Serial.printf("TOUCH raw=(%d,%d) mapped=(%d,%d) count=%lu\n",p.x,p.y,touchX,touchY,(unsigned long)touches);
-    // Yellow marker helps distinguish detection from mis-calibration.
-    screen.fillCircle(touchX,touchY,4,TFT_YELLOW);
-    if(touchY>=168 && touchY<=226 && deviceCount) {
-      if(touchX<80) {stopStream();selected=(selected+deviceCount-1)%deviceCount;}
-      else if(touchX<160) {stopStream();selected=(selected+1)%deviceCount;}
+    if(touchY>=194){
+      touchPage=touchX<160?0:1;uiDirty=true;
+    }else if(touchPage==0 && touchY>=150 && touchY<194 && deviceCount){
+      if(touchX<107){stopStream();selected=(selected+deviceCount-1)%deviceCount;}
+      else if(touchX<214){stopStream();selected=(selected+1)%deviceCount;}
       else {if(streaming)stopStream();else startStream();}
-      drawScreen();
+      uiDirty=true;
+    }else if(touchPage==1){
+      if(touchY>=45 && touchY<88){
+        effectMode=(effectMode+(touchX<110?2:1))%3;uiDirty=true;
+      }else if(touchY>=90 && touchY<194){
+        // Slider bars span x=13..307. Values update live, including during DDP playback.
+        int value=constrain(map(touchX,13,307,0,255),0,255);
+        if(touchY<126)speed=value;
+        else if(touchY<162)intensity=value;
+        else brightness=value;
+        uiDirty=true;
+      }
     }
   }
   touchDown=down;
@@ -482,6 +542,6 @@ void loop() {
   }
   if(now-lastPoll>=POLL_MS) pollDevices();
   if(!streaming && now-lastDiscovery>=DISCOVERY_MS) discover();
-  if(now-lastScreen>=3000) {drawScreen();lastScreen=now;}
+  if(now-lastScreen>=150) {drawScreen();lastScreen=now;}
   delay(1);
 }
