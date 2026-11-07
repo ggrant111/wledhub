@@ -1,0 +1,33 @@
+name: Build CYD firmware
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+      - name: Unit test DDP packet builder
+        run: python -m unittest discover -s test -p 'test_*.py' -v
+      - name: Install PlatformIO
+        run: pip install platformio
+      - name: Compile firmware
+        run: pio run -e cyd
+      - name: Copy binary
+        run: cp .pio/build/cyd/firmware.bin firmware.bin
+      - uses: actions/upload-artifact@v4
+        with:
+          name: wledhub-cyd-firmware
+          path: firmware.bin
+          if-no-files-found: error
+      - name: Publish tag release
+        if: startsWith(github.ref, 'refs/tags/v')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release create "${GITHUB_REF_NAME}" firmware.bin --title "WLEDHub ${GITHUB_REF_NAME}" --generate-notes
