@@ -1,4 +1,4 @@
-# WLEDHub v0.1.2 — CYD WLED Control Center
+# WLEDHub v0.1.3 — CYD WLED Control Center
 
 Standalone firmware for **ESP32-2432S028R (2.8 inch 320x240 resistive-touch CYD)**.
 
@@ -51,3 +51,6 @@ The XPT2046 library is pinned from its upstream GitHub repository at tag `v1.4` 
 The CYD now has three touchscreen tabs: **DEV** (previous/next controller, DDP play/stop), **FX** (Solid, Pulse, Chase with adjustable speed, intensity and brightness), and **RGB** (red/green/blue color sliders). Changes while DDP is streaming take effect during the next generated frame. Web controls remain available.
 
 The previous forced full-screen refresh every 3 seconds has been removed. Display rendering now checks for a state change and skips drawing when nothing changed. On an intentional state change the relevant UI page is repainted; color or touch-calibration changes may still cause a brief repaint. This version is pending real-hardware validation.
+
+## v0.1.3 OTA troubleshooting
+The OTA page now shows firmware size, available sketch space, an upload progress bar, and detailed ESP32 Update error messages. Upload the **extracted** `firmware.bin`, not the `wledhub-cyd-firmware.zip` GitHub Actions artifact. USB flashing is required if the **currently installed** firmware's OTA endpoint cannot accept a valid bin; new OTA diagnostics only become available once v0.1.3 is running. Do **not** change the partition table for an OTA update: partition changes require USB flashing. If an upload fails, the new handler does not reboot. Full resolution still depends on testing a successful CI build and the device.
