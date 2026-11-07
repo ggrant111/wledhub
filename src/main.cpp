@@ -14,7 +14,7 @@
 #include <math.h>
 #include "ddp_packet.h"
 
-static const char *VERSION="0.1.2";
+static const char *VERSION="0.1.3";
 static constexpr int MAX_DEVICES=16;
 static constexpr uint32_t POLL_MS=12000;
 static constexpr uint32_t DISCOVERY_MS=60000;
@@ -55,6 +55,15 @@ uint16_t touchMinX=200,touchMaxX=3800,touchMinY=200,touchMaxY=3800;
 int touchX=-1,touchY=-1, touchRawX=-1,touchRawY=-1;
 uint32_t touches=0;
 String lastError;
+bool otaStarted=false, otaFinished=false, otaFailed=false;
+size_t otaBytes=0;
+String otaError;
+void failOTA(const String &message) {
+  if(!otaFailed) otaError=message;
+  otaFailed=true;
+  Serial.println("OTA ERROR: "+otaError);
+  if(Update.isRunning()) Update.abort();
+}
 uint8_t touchPage=0; // 0: devices, 1: DDP effects, 2: color
 bool uiDirty=true;
 String screenSignature;
@@ -226,6 +235,11 @@ String statusJSON() {
   doc["effect"]=effectMode; doc["speed"]=speed; doc["intensity"]=intensity;
   doc["brightness"]=brightness; doc["color"]=String(rgb,HEX);
   doc["error"]=lastError;
+  doc["otaRunning"]=otaStarted && !otaFinished && !otaFailed;
+  doc["otaBytes"]=(uint32_t)otaBytes;
+  doc["otaError"]=otaError;
+  doc["sketchSize"]=ESP.getSketchSize();
+  doc["freeSketchSpace"]=ESP.getFreeSketchSpace();
   doc["displayInvert"]=invertPanel;
   doc["touchCount"]=touches;
   doc["touchX"]=touchX; doc["touchY"]=touchY;
@@ -377,21 +391,69 @@ void routes() {
   server.on("/api/start",HTTP_POST,[](){reply(startStream());});
   server.on("/api/stop",HTTP_POST,[](){stopStream();lastError="";reply();});
   server.on("/update",HTTP_GET,[](){
-    server.send(200,"text/html","<html><body style='font-family:system-ui'><h2>WLEDHub Firmware OTA</h2><p>Trusted LAN only. Upload firmware.bin compiled for CYD.</p><form method='POST' action='/update' enctype='multipart/form-data'><input type='file' name='firmware' accept='.bin' required><button>Upload & Reboot</button></form></body></html>");
+    String page=R"HTML(<!doctype html><html lang="en"><head><meta name="viewport" content="width=device-width,initial-scale=1">
+<style>body{font:16px system-ui;max-width:660px;margin:40px auto;padding:16px;background:#101827;color:#eee}button,input{padding:10px;margin:6px 0}button{background:#1c9d91;color:white;border:0;border-radius:6px}progress{width:100%;height:24px}pre{white-space:pre-wrap;background:#253145;padding:14px;border-radius:8px}a{color:turquoise}</style></head>
+<body><h2>WLEDHub firmware OTA</h2><p>Upload only an extracted <b>firmware.bin</b> for the 2.8-inch ESP32 CYD. Do not upload the GitHub artifact ZIP, bootloader.bin, or partitions.bin.</p>
+<p id="capacity"></p><form id="form"><input id="file" type="file" accept=".bin,application/octet-stream" required><br><button type="submit">Upload firmware</button></form>
+<progress id="progress" max="100" value="0"></progress><pre id="message">Ready. Keep the device powered during upload.</pre>
+<p><a href="/">Back to WLEDHub</a></p>
+<script>
+const form=document.getElementById('form'),file=document.getElementById('file'),msg=document.getElementById('message'),progress=document.getElementById('progress');
+fetch('/api/status').then(r=>r.json()).then(s=>{
+ document.getElementById('capacity').textContent='Running firmware: '+s.version+' | current binary: '+s.sketchSize+' bytes | OTA space: '+s.freeSketchSpace+' bytes';
+}).catch(()=>{});
+form.addEventListener('submit',e=>{
+ e.preventDefault();const f=file.files[0];if(!f)return;
+ if(f.name.toLowerCase()!=='firmware.bin'){msg.textContent='Select the extracted firmware.bin, not a ZIP or a different BIN.';return}
+ const data=new FormData();data.append('firmware',f);
+ const request=new XMLHttpRequest();
+ request.open('POST','/update');
+ request.upload.onprogress=e=>{if(e.lengthComputable){progress.value=Math.round(100*e.loaded/e.total);msg.textContent='Uploading: '+progress.value+'%'}}; 
+ request.onload=()=>{msg.textContent=request.responseText || ('HTTP '+request.status);if(request.status===200)msg.textContent+='\nDevice should restart. Reconnect to WLEDHub in about 15 seconds.';};
+ request.onerror=()=>{msg.textContent='Connection interrupted during upload. Check the device and reload its IP address before retrying.'};
+ request.send(data);
+});
+</script></body></html>)HTML";
+    server.send(200,"text/html",page);
   });
   server.on("/update",HTTP_POST,[](){
-    bool ok=!Update.hasError();
-    server.send(ok?200:500,"text/plain",ok?"Update completed. Rebooting...":"Update failed.");
-    delay(300);if(ok)ESP.restart();
+    bool ok=otaStarted && otaFinished && !otaFailed && !Update.hasError();
+    if(!ok && otaError.length()==0) otaError="Upload did not complete successfully";
+    Serial.printf("OTA result: %s, bytes=%u, error=%s\n",ok?"success":"failure",(unsigned)otaBytes,otaError.c_str());
+    server.sendHeader("Connection","close");
+    server.send(ok?200:500,"text/plain",ok?"Firmware verified. Restarting now.":"Firmware update failed: "+otaError+"\nUploaded bytes: "+String((unsigned)otaBytes)+
+      "\nAvailable OTA partition space: "+String(ESP.getFreeSketchSpace())+
+      "\nMake sure you extracted firmware.bin from the GitHub artifact ZIP. If insufficient space, a USB flash with a compatible partition layout may be required.");
+    delay(400);
+    if(ok)ESP.restart();
   },[](){
     HTTPUpload &upload=server.upload();
     if(upload.status==UPLOAD_FILE_START) {
+      otaStarted=true;otaFinished=false;otaFailed=false;otaBytes=0;otaError="";
+      Serial.printf("OTA: file=%s, freeSketchSpace=%u\n",upload.filename.c_str(),(unsigned)ESP.getFreeSketchSpace());
+      if(upload.filename!="firmware.bin"){failOTA("Expected firmware.bin, received "+upload.filename);return;}
       stopStream();
-      if(!Update.begin(UPDATE_SIZE_UNKNOWN,U_FLASH))lastError="Update begin failed";
+      if(!Update.begin(UPDATE_SIZE_UNKNOWN,U_FLASH)) {
+        failOTA("Update.begin: "+String(Update.errorString()));
+      }
     } else if(upload.status==UPLOAD_FILE_WRITE) {
-      if(Update.write(upload.buf,upload.currentSize)!=upload.currentSize)lastError="Update write failed";
+      if(otaFailed)return;
+      if(!otaStarted || !Update.isRunning()){failOTA("Upload write arrived without an active update");return;}
+      if(otaBytes==0 && upload.currentSize>0 && upload.buf[0]!=0xE9) {
+        failOTA("Invalid ESP32 firmware header (expected 0xE9); are you uploading a ZIP?");
+        return;
+      }
+      size_t written=Update.write(upload.buf,upload.currentSize);
+      otaBytes+=written;
+      if(written!=upload.currentSize)failOTA("Update.write: "+String(Update.errorString()));
     } else if(upload.status==UPLOAD_FILE_END) {
-      if(!Update.end(true))lastError="Update validation failed";
+      if(otaFailed || !otaStarted)return;
+      if(otaBytes==0){failOTA("No firmware data was received");return;}
+      if(!Update.end(true)){failOTA("Update.end: "+String(Update.errorString()));return;}
+      otaFinished=true;
+      Serial.printf("OTA: verified %u bytes\n",(unsigned)otaBytes);
+    } else if(upload.status==UPLOAD_FILE_ABORTED) {
+      failOTA("Upload aborted by client");
     }
   });
   server.begin();
