@@ -1,4 +1,4 @@
-# WLEDHub v0.1.1 — CYD WLED Control Center
+# WLEDHub v0.1.2 — CYD WLED Control Center
 
 Standalone firmware for **ESP32-2432S028R (2.8 inch 320x240 resistive-touch CYD)**.
 
@@ -46,3 +46,8 @@ The 2.8-inch ESP32-2432S028R uses a **separate XPT2046 touch SPI bus** (CLK 25, 
 
 ## Build dependency fix
 The XPT2046 library is pinned from its upstream GitHub repository at tag `v1.4` because the owner-qualified PlatformIO Registry specification could not be resolved in CI. See `platformio.ini`.
+
+## v0.1.2 touchscreen controls
+The CYD now has three touchscreen tabs: **DEV** (previous/next controller, DDP play/stop), **FX** (Solid, Pulse, Chase with adjustable speed, intensity and brightness), and **RGB** (red/green/blue color sliders). Changes while DDP is streaming take effect during the next generated frame. Web controls remain available.
+
+The previous forced full-screen refresh every 3 seconds has been removed. Display rendering now checks for a state change and skips drawing when nothing changed. On an intentional state change the relevant UI page is repainted; color or touch-calibration changes may still cause a brief repaint. This version is pending real-hardware validation.
