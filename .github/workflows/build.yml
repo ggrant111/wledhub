@@ -19,6 +19,11 @@ jobs:
         run: g++ -std=c++11 -Wall -Wextra -Werror -Iinclude test/test_ddp.cpp -o /tmp/wledhub-ddp && /tmp/wledhub-ddp
       - name: Install PlatformIO
         run: pip install platformio
+      - name: Resolve firmware libraries
+        run: |
+          pio pkg install -e cyd
+          pio pkg list -e cyd
+          test -f .pio/libdeps/cyd/XPT2046_Touchscreen/XPT2046_Touchscreen.h
       - name: Compile firmware
         run: pio run -e cyd
       - name: Copy binary
