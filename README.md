@@ -43,3 +43,6 @@ The 2.8-inch ESP32-2432S028R uses a **separate XPT2046 touch SPI bus** (CLK 25, 
 - Touch count + raw/mapped X/Y are visible in diagnostics and serial monitor (115200). Tap once anywhere to verify count increments. Bottom-left, middle, and right touchscreen buttons are Previous, Next, Play/Stop.
 - If taps increment the counter but don't hit their target, use **Swap touch axes / Flip touch X / Flip touch Y** toggles on the web dashboard to diagnose orientation mismatch. Future versions can add guided 4-corner calibration.
 - This change has not yet been verified on your physical CYD. Upload the newly built v0.1.1 firmware using the existing web OTA portal.
+
+## Build dependency fix
+The XPT2046 library is pinned from its upstream GitHub repository at tag `v1.4` because the owner-qualified PlatformIO Registry specification could not be resolved in CI. See `platformio.ini`.
